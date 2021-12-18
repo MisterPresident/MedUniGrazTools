@@ -1,1 +1,2 @@
 git+git://github.com/MisterPresident/ratools
+genanki
