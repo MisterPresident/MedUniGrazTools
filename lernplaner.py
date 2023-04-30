@@ -1,5 +1,7 @@
 import datetime
 import urllib.parse
+import xml.etree.ElementTree as ET
+from furl import furl
 
 from bs4 import BeautifulSoup
 from ratools import ratools
@@ -36,28 +38,53 @@ if r.status_code != 200:
     exit(1)
 print("Login erfolgreich.")
 
-url_lectures = "https://online.medunigraz.at/mug_online/pl/ui/$ctx;design=ca2;header=max;lang=de/wbLVPersonal.wbShowPersonalLV"
-r = s.get(url_lectures)
-soup = BeautifulSoup(r.content, "html.parser")
+base_url = "https://online.medunigraz.at/mug_online/pl/ui/$ctx;design=ca2;header=max;lang=de/"
+r = s.get(base_url + "/wbLVPersonal.wbShowPersonalLV")
+print(r.url)
+#soup = BeautifulSoup(r.content, "html.parser")
 
-tr_lectures = soup.find_all("tr", {"class": "coTableR"})
+#next_page = soup.select_one("a.coTableNaviNextPage")
 
+#main_url = ""
+#if next_page is not None:
+#    main_url = soup.select_one("a.coTableNaviNextPage")["href"]
+#main_url = base_url + main_url
+
+pageNr = 1
+#main_url = furl(main_url)
+
+main_url = r.url
 lectures = []
 
-for l in tr_lectures:
-    column = l.find_all("td")
-    lecture_type = column[4].text.strip()
-    info = column[2].find_all("span")
-    name = info[0].text
-    group = info[3].text
-    id = column[2].find("a")["href"].split("/")[-1].split("?")[0]
+while True:
+    #main_url.args["pPageNr"] = pageNr
+    print(main_url)
+    r = s.get(main_url)
+    #root = ET.fromstring(r.content)
+    #content = root.find("./instruction[@action='replaceElement']").text
+    content = r.content
+    soup = BeautifulSoup(content, "html.parser")
 
-    lectures.append({
-        "id": id,
-        "type": lecture_type,
-        "name": name,
-        "group": group
-    })
+    tr_lectures = soup.find_all("tr", {"class": "coTableR"})
+    if len(tr_lectures) == 0:
+        break
+
+    for l in tr_lectures:
+        column = l.find_all("td")
+        lecture_type = column[4].text.strip()
+        info = column[2].find_all("span")
+        name = info[0].text
+        group = info[3].text
+        id = column[2].find("a")["href"].split("/")[-1].split("?")[0]
+
+        lectures.append({
+            "id": id,
+            "type": lecture_type,
+            "name": name,
+            "group": group
+        })
+    pageNr += 1
+    break
 
 lectures.sort(key=lambda x: (x["name"], x["type"]))
 

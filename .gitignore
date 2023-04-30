@@ -132,3 +132,6 @@ dmypy.json
 
 *.csv
 .idea/
+*.apkg
+*.jpg
+*.png

@@ -1,39 +1,45 @@
-import html
-
-from bs4 import BeautifulSoup
-from ratools import ratools
-import genanki
+import time
 import glob
+import html
 import os
 import urllib
-import datetime
+
+import genanki
+from bs4 import BeautifulSoup
+from ratools import ratools
 
 tag_id = 39  # pädiatrie
 tag_id = 2  # Thorax
 tag_id = 20  # Ortho
+tag_id = 40  # Radiologie
+tag_id = 15  # Informatik
+tag_id = 14  # Derma
+tag_id = 29  # Augen
+tag_id = 38  # Anästhesie
 
 os.makedirs("img", exist_ok=True)
 for f in glob.glob("*.png"):
     os.remove(f)
-for f in glob.glob("*.apkg"):
-    os.remove(f)
+#for f in glob.glob("*.apkg"):
+#    os.remove(f)
 
 my_package = None
 my_deck = None
 my_model = genanki.Model(
-    2056521903,
+    2056521905,
     'MedUniGraz - KnowledgePulse',
     fields=[
-        {'name': 'ID'},
         {'name': 'Question'},
         {'name': 'Answer'},
-        {'name': 'Extra'},
+        {'name': 'QuestionExtra'},
+        {'name': 'AnswerExtra'},
+        {'name': 'ID'},
     ],
     templates=[
         {
             'name': 'Card 1',
-            'qfmt': '{{Question}}{{Answer}}',
-            'afmt': '{{FrontSide}}<hr id="extra">{{Extra}}<style>.correct {font-weight: bold}</style>',
+            'qfmt': '{{Question}}{{Answer}}{{QuestionExtra}}',
+            'afmt': '{{FrontSide}}<div id="extra">{{AnswerExtra}}</div><style>.correct {font-weight: bold}</style>',
         },
     ],
     css="""html, body {
@@ -44,8 +50,8 @@ my_model = genanki.Model(
 
 .card {
  font-family: arial;
- font-size: 20px;
- text-align: left;
+ font-size: 24px;
+ text-align: center;
  color: black;
  background-color: white;
 }""")
@@ -78,157 +84,180 @@ for courseId in course_Ids:
     s.post(url + "KnowledgePulse/client/unsubscribePublicContentCourse",
            json={"courseId": courseId})
 
-
-
 r = s.get(url + "KnowledgePulse/client/available?tagId={}".format(tag_id))
 soup = BeautifulSoup(r.content, "html.parser")
 course_Ids = [cid["href"].replace("course", "")
               for cid in soup.select("a.listAvailableEntry")]
 
-img_nr = 0
+
+
+def process_imgs(div):
+    for img in div.select("img"):
+        if "class" in img.attrs and "icon" in img["class"]:
+            continue
+        response = s.get(img["src"])
+        img_nr = time.time_ns()
+        file_path = os.path.join(
+            "_img_{}_{:05d}.png".format(id, img_nr))
+        file = open(file_path, "wb")
+        file.write(response.content)
+        file.close()
+        my_package.media_files.append(file_path)
+        img["src"] = file_path
+
+def preprocess_html(tag):
+    for x in tag.select("div.context_header"):
+        x.name = "h1"
+def preprocess_imgs(imgs):
+    for img in imgs:
+        url = img["onclick"].split("'")[1].replace("\\", "")
+        new_tag = soup.new_tag("img", src=url)
+        img.replaceWith(new_tag)
+
+
+def tag_children_to_text(question):
+    res = []
+    for q in question.find_all(True, recursive=False):
+        for x in q.find_all(True, recursive=False):
+            if q.name == x.name:
+                print("now")
+        txt = q.text.strip()
+        if txt == "" and q.name in ["p"]:
+            continue
+        res.append(str(q).strip())
+    return "\n".join(res)
+
+
+def process_context(class_name):
+    answer = soup.select_one(class_name)
+    if answer is None:
+        return ""
+
+    image_wrapper = answer.select_one(".imagewrapper")
+    answer_imgs = image_wrapper.select("a.intro_image")
+    preprocess_imgs(answer_imgs)
+    process_imgs(image_wrapper)
+    extra_image = tag_children_to_text(image_wrapper)
+
+    context_text = answer.select_one(".context_text")
+    context_imgs = context_text.select("a.intro_image")
+    preprocess_imgs(context_imgs)
+    process_imgs(context_text)
+    preprocess_html(context_text)
+    extra_text = tag_children_to_text(context_text)
+
+    return extra_image + "\n" + extra_text
+
+
 for courseId in course_Ids:
     questions = {}
+    # new
+    course_url = url + "KnowledgePulse/client/course" + courseId
+    r = s.get(course_url)
+    soup = BeautifulSoup(r.content, "html.parser")
+    if soup.select_one("#courseSubscribe") is not None:
+        r = s.get(url + "KnowledgePulse/client/subscribeCourse?id=" + courseId)
+    else:
+        raise Exception("Cannot subscribe.")
 
-    while True:
-        r = s.get(url + "KnowledgePulse/client/course" + courseId)
-        soup = BeautifulSoup(r.content, "html.parser")
-        title = soup.select_one(".course_title").text.strip()
+    r = s.get(url + "KnowledgePulse/client/index", headers={'referer': course_url})
+    soup = BeautifulSoup(r.content, "html.parser")
+    title = soup.select_one("#pageTitle").text.strip()
+    #if "Fallvig" not in title:
+    #    continue
+    print("# " + title)
+    my_deck = genanki.Deck(1292963141, title)
+    my_package = genanki.Package(my_deck)
 
-        info = soup.select_one(".course_info").text.strip()
+    lessions = soup.select(".indexlesson")
+    lessions.sort(key=lambda x: x.select_one("a.lessonheaderlink").text)
 
-        if soup.select_one("#courseSubscribe") is not None:
-            r = s.get(
-                url + "KnowledgePulse/client/subscribeCourse?id=" + courseId)
-            continue
-        if soup.select_one("#courseRepeat") is not None:
-            total_questions = int(info.split(
-                "und")[1].split("Karte")[0].strip())
-            if total_questions == len(questions):
-                break
-            else:
-                r = s.get(url + "KnowledgePulse/client/repeatCourse")
-        r = s.get(url + "KnowledgePulse/client/lesson-intro")
-        soup = BeautifulSoup(r.content, "html.parser")
-        course = soup.select_one(".course_title").text.strip()
+    for lession in lessions:
+        course = lession.select_one("a.lessonheaderlink").text.strip()
+        print("## " + course)
 
-        if my_deck is None:
-            my_deck = genanki.Deck(1292963141, title)
-            my_package = genanki.Package(my_deck)
-            print("")
-            print(title + " - " + info)
-        print(course)
+        question_list = {}
 
-        while True:
-            r = s.get(url + "KnowledgePulse/client/learn")
+        questions = lession.select("a.indexcard")
+        for q in questions:
+            if q["href"] == "javascript:;":
+                continue
+            q_id = q["href"].split("id=")[1]
+            r = s.get(url + "KnowledgePulse/client/preview?id={}".format(q_id))
             soup = BeautifulSoup(r.content, "html.parser")
-            if soup.select_one(".learn") is not None:
-                r = s.get(url + "KnowledgePulse/client/learn")
-                soup = BeautifulSoup(r.content, "html.parser")
-                if "subscribed" in r.url:
-                    break
-
+            with open("/tmp/index.html", "wb") as f:
+                f.write(r.content)
             id = soup.select_one("#cardid")
             if id is None:
-                continue
+                raise Exception("No card id")
             id = id.text.strip()
 
-            if id not in questions:
-                question = soup.select_one(".question")
-                question_imgs = question.select("img.editorImage")
-                question = "<p>{}</p>".format(question.text.strip())
-                question_img = ""
-                if len(question_imgs) > 0:
-                    for img in question_imgs:
-                        url_parsed = urllib.parse.urlparse(img["src"])
-                        query = urllib.parse.parse_qs(url_parsed.query)
-                        response = s.get(img["src"])
-                        img_nr = int(datetime.datetime.now().timestamp())
-                        file_path = os.path.join(
-                            "_img_{}_{:05d}.png".format(id, img_nr))
-                        file = open(file_path, "wb")
-                        file.write(response.content)
-                        file.close()
-                        img_nr += 1
-                        my_package.media_files.append(file_path)
-                        question += "<img src=\"{}\"></img>".format(file_path)
+            question = soup.select_one(".question")
+            question_imgs = question.select(".question_image")
+            preprocess_imgs(question_imgs)
+            process_imgs(question)
+            question = tag_children_to_text(question)
 
-                answers = soup.select(".answer")
-                answer_imgs = soup.select(".answer img")
-                if len(answer_imgs) > 0:
-                    for img in answer_imgs:
-                        blacklist = [
-                            "/KnowledgePulse/img/emptyradio.png", "/KnowledgePulse/img/empty.png"]
-                        if img["src"] not in blacklist:
-                            print(img)
-                            print(blacklist)
-                            print("img found")
-                answers = [(a.text.strip(), a["id"].strip()) for a in answers]
-                context = soup.select_one(".context")
-                if context is not None:
-                    context_imgs = context.select("img.editorImage")
-                    context = soup.select_one(".answer_context")
-                    if context is not None:
-                        context.select_one(".context_header").decompose()
-                        del context.attrs["style"]
-                    if len(context_imgs) > 0:
-                        for img in context_imgs:
-                            url_parsed = urllib.parse.urlparse(img["src"])
-                            query = urllib.parse.parse_qs(url_parsed.query)
-                            response = s.get(img["src"])
-                            img_nr = int(datetime.datetime.now().timestamp())
-                            file_path = os.path.join(
-                                "_img_{}_{:05d}.png".format(id, img_nr))
-                            file = open(file_path, "wb")
-                            file.write(response.content)
-                            file.close()
-                            img_nr += 1
-                            my_package.media_files.append(file_path)
-                            img["src"] = file_path
+            question_extra = process_context(".question_context")
+
+            extra = process_context(".answer_context")
+
+
+            if question not in question_list:
+                question_list[question] = {"question_extra": question_extra, "answer_extra": extra, "id": id, "answers": {}}
+
+            answers = soup.select(".answer")
+            answers = [(a.text.strip(), a["id"].strip()) for a in answers]
+
+
+            # get correct answers
+            r = s.post(url + "KnowledgePulse/client/checkPreviewAnswers?id=" + q_id)
+            _, wrong, correct = r.text.split(";")
+            solution = correct.split(",")
+
+            for a in answers:
+                a_id = a[1]
+                correct_answer = a_id in solution
+                if a[0] in question_list[question]:
+                    assert (question_list[question]["answers"][a[0]] == correct_answer)
                 else:
-                    context = ""
+                    question_list[question]["answers"][a[0]] = correct_answer
 
-                print(question)
-                for a, aid in answers:
-                    print(" - " + a)
-                print("")
+        for question, question_props in question_list.items():
 
-                r = s.post(url + "KnowledgePulse/client/checkAnswers")
-
-                _, wrong, correct = r.text.split(";")
-
-                solution = correct.split(",")
-
-                questions[id] = {"q": question, "a": answers, "c": context,
-                                 "s": solution}
-
-                answers_formated = "<ul>"
-                for a, aid in answers:
+            answer_extra = question_props["answer_extra"]
+            question_extra = question_props["question_extra"]
+            question_id = question_props["id"]
+            if question.startswith("<p>Welche Aussage(n)") and False: #remove if you want to split answers
+                for a, correct in question_props["answers"].items():
+                    answer = ""
                     a = html.escape(a)
-                    if aid in solution:
-                        answers_formated += "<li class=\"correct\">{}</li>".format(
-                            a)
+                    if correct:
+                        answer += "<p class=\"correct\">- {}</p>".format(a)
                     else:
-                        answers_formated += "<li class=\"incorrect\">{}</li>".format(
-                            a)
-                answers_formated += "</ul>"
+                        answer += "<p class=\"incorrect\">- {}</p>".format(a)
 
-                my_note = genanki.Note(model=my_model, fields=[id, question, answers_formated, str(
-                    context)], tags=["KnowledgePulse::{}::{}".format(title, course).replace(" ", "_")])
-                my_note.guid = genanki.guid_for(courseId, id)
+                    my_note = genanki.Note(model=my_model, fields=[question, answer, question_extra, answer_extra, question_id],
+                                           tags=["KnowledgePulse::{}::{}".format(title, course).replace(" ", "_")])
+                    my_note.guid = genanki.guid_for(tag_id, courseId, question_id, a)
+
+                    my_deck.add_note(my_note)
+            else:
+                answer = ""
+                for a, correct in question_props["answers"].items():
+                    a = html.escape(a)
+                    if correct:
+                        answer += "<p class=\"correct\">- {}</p>".format(a)
+                    else:
+                        answer += "<p class=\"incorrect\">- {}</p>".format(a)
+
+                my_note = genanki.Note(model=my_model, fields=[question, answer, question_extra, answer_extra, question_id],
+                                       tags=["KnowledgePulse::{}::{}".format(title, course).replace(" ", "_")])
+                my_note.guid = genanki.guid_for(tag_id, courseId, question_id)
 
                 my_deck.add_note(my_note)
-            else:
-                print("Hmnnn I know this answer!")
-                para = "?answer=" + "&answer=".join(questions[id]["s"])
-                r = s.post(url + "KnowledgePulse/client/checkAnswers")
-                answered, wrong, correct = r.text.split(";")
-                r = s.post(url + "KnowledgePulse/client/checkAnswers" + para)
-                answered, wrong, correct = r.text.split(";")
-                if wrong != "":
-                    print("correct")
 
     filename = title + '.apkg'
     filename = filename.replace(os.path.sep, "")
     if my_package is not None:
         my_package.write_to_file(filename)
-    my_deck = None
